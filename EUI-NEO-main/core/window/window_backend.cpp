@@ -1,3 +1,5 @@
+// Modified from EUI-NEO by PXCLauncher (2026-11). See MODIFICATIONS.md in this directory.
+
 #include "core/window/window_backend.h"
 #include "core/platform/native_bridge.h"
 

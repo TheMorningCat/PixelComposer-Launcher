@@ -100,6 +100,35 @@ def main():
         alt = os.path.join(BIN, "pxc_launcher_new.exe")
         shutil.copy2(exe, alt)
         print("可执行文件被占用，已另存 ->", alt)
+
+    # 5) 第三方许可副本：Apache-2.0 §4(a) 要求分发 Object form（exe）时随附许可全文。
+    #    源码分发时许可已随仓库存在，这一步只服务 launcher/bin 这个发行目录。
+    #    自动遍历而不是硬编码清单 —— 上游 3rd/ 增删依赖时不用改这里。
+    lic_dir = os.path.join(BIN, "licenses")
+    os.makedirs(lic_dir, exist_ok=True)
+    n_lic = 0
+    own = os.path.join(ROOT, "LICENSE")
+    if os.path.isfile(own):
+        shutil.copy2(own, os.path.join(lic_dir, "PXC-Launcher.txt"))
+        n_lic += 1
+    eui = os.path.join(ROOT, "EUI-NEO-main")
+    for d, dirs, fs in os.walk(eui):
+        dirs[:] = [x for x in dirs if x not in ("assets", ".git")]
+        for f in fs:
+            if not f.upper().startswith(("LICENSE", "COPYING")):
+                continue
+            rel = os.path.relpath(os.path.join(d, f), eui).replace("\\", "/")
+            # EUI 根目录的 LICENSE 用直观名字；3rd 的带上级路径防重名。
+            # 原文件名可能是 LICENSE / LICENSE.md / LICENSE.TXT，统一剥成 .txt 免得出现 LICENSE.TXT.txt
+            if rel == "LICENSE":
+                name = "EUI-NEO.txt"
+            else:
+                d_part, base = rel.rsplit("/", 1) if "/" in rel else ("", rel)
+                stem = base.rsplit(".", 1)[0] if "." in base else base
+                name = (d_part.replace("/", "--") + "--" if d_part else "") + stem + ".txt"
+            shutil.copy2(os.path.join(d, f), os.path.join(lic_dir, name))
+            n_lic += 1
+    print(f"许可副本 -> {lic_dir} ({n_lic} 个)")
     return 0
 
 

@@ -1,3 +1,5 @@
+// Modified from EUI-NEO by PXCLauncher (2026-11). See MODIFICATIONS.md in this directory.
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN

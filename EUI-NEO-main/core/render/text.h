@@ -1,3 +1,5 @@
+// Modified from EUI-NEO by PXCLauncher (2026-11). See MODIFICATIONS.md in this directory.
+
 #pragma once
 
 #include "core/render/render_types.h"
