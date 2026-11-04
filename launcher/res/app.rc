@@ -1,0 +1,10 @@
+// 程序图标资源。
+//
+// 资源名必须叫 GLFW_ICON：vendored GLFW 在注册窗口类时按**这个名字** LoadImage
+// （EUI-NEO-main/3rd/glfw/src/win32_window.c:1297），拿到后就不再是系统的默认白窗口图标。
+// 同时它也是 exe 里唯一的图标组 → 资源管理器 / 任务栏 / 快捷方式用的就是这一张。
+//
+// launcher.ico 是 tmp/mkicon.py 从 素材/素材-启动器icon.png（256 RGBA）+ 素材-启动器icon-x16.ico
+// （手调 16px）合成的多尺寸包：16/20/24/32/40/48/64/128 是 32bpp BMP 帧，256 是 PNG 帧。
+// 换图标 = 换 素材/ 里那两张图，然后重跑 python tmp/mkicon.py，不用改这里。
+GLFW_ICON ICON "launcher.ico"

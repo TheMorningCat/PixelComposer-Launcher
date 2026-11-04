@@ -1,0 +1,5 @@
+# 统一换行：Windows 项目，检出时一律 CRLF（MSVC 与 rc.exe 对 CRLF 更友好），
+# 仓库内存 LF。脚本类保持 LF，避免在 WSL / Git Bash 下执行时踩 \r 的坑。
+* text=auto eol=crlf
+*.sh text eol=lf
+*.py text eol=lf
