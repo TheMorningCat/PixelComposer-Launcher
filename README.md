@@ -69,9 +69,18 @@ EUI-NEO-main/           vendored UI 框架（含其 LICENSE）
 - 工程样本、用户目录结构副本、备份与设计参考图
 - 依赖上述样本的开发期诊断工具（`pxc_backend_test` / `pxc_gen_test` / `pxc_db_build` / `pxc_gen_cli`，见 `launcher/CMakeLists.txt` 的 `PXC_DEV_TOOLS` 选项，默认关闭）
 
+## 许可
+
+源代码采用 [MIT](LICENSE) 许可。
+
+**图标不在授权范围内。** `素材/` 下的 logo 源文件、`launcher/res/launcher.ico`，以及由
+`tools/mkicon.py` 生成的一切图标，保留所有权利。如果你要发布修改版，请换一个图标——
+这样用户才不会把别人的版本当成这里发布的版本。
+
 ## 第三方
 
-- [EUI-NEO](EUI-NEO-main) —— vendored UI 框架，遵循其自带 LICENSE
+- [EUI-NEO](EUI-NEO-main) —— vendored UI 框架，Apache License 2.0；本地改动逐项记录在
+  [EUI-NEO-main/MODIFICATIONS.md](EUI-NEO-main/MODIFICATIONS.md)
 - Noto Sans SC、Fira Code、JetBrains Mono —— SIL Open Font License 1.1
 - zlib 1.3.1 —— 见 `EUI-NEO-main/3rd/zlib-1.3.1`
 - Steam / itch.io 图标为各平台商标，仅用于标识渠道
