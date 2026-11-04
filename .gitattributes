@@ -3,3 +3,25 @@
 * text=auto eol=crlf
 *.sh text eol=lf
 *.py text eol=lf
+
+# vendored 第三方代码保持上游原样（LF）。一旦检出成 CRLF，将来想跟上游对比、
+# 或看「我到底改了哪几行」时，整个文件都会显示成变动的噪音。
+EUI-NEO-main/** text eol=lf
+
+# 二进制显式声明：避免任何 text/eol 规则把它们当文本重写。
+# （`git add --renormalize` 曾把 png/jpg/pdf 一并纳入，属真实损坏风险。）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.mp3 binary
+*.zip binary
+*.psd binary
+*.exe binary
+*.dll binary
+*.spv binary
