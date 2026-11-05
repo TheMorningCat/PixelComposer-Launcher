@@ -5801,6 +5801,37 @@ static void setHint(core::dsl::Ui& ui, const std::string& id, const std::string&
         .color(setTextDim()).wrap(true).build();
 }
 
+// 「关于信息」里的信息行，统一两行式：第一行说明文字 + 右侧按钮，第二行 12 号灰字放
+// 具体值（地址 / 群号）。细节**不能和说明并成一行**：这一列文字区只有 innerW-90（右边
+// 78 px 留给按钮），而 ui.text 不裁剪 —— 长 URL 会直接压到按钮底下。实测 PXC 那行合成
+// 时 813 px、版本行 847 px，可用只有 686 px。
+// 按钮锚在右边缘（pad + innerW - 78）而不是跟在文字后面：几行的按钮左沿因此对齐成一条
+// 竖线，跟着文字宽度浮动会显得参差。
+static void setAboutRow(core::dsl::Ui& ui, const std::string& id, const std::string& label,
+                        const std::string& detail, const std::string& btnText,
+                        std::function<void()> fn, float pad, float innerW, float& y) {
+    const auto th = uiTheme();
+    ui.text(id).position(pad, y).size(innerW - 90.0f, kSetCtrlH)
+        .text(label).fontSize(14.0f).lineHeight(20.0f).color(setTextMain())
+        .verticalAlign(core::VerticalAlign::Center).build();
+    ui.stack(id + ".act.wrap").position(pad + innerW - 78.0f, y).size(72.0f, kSetCtrlH).content([&] {
+        components::button(ui, id + ".act").theme(th, false).size(72.0f, kSetCtrlH)
+            .text(btnText).fontSize(13.0f)
+            .onClick(std::move(fn)).build();   // 按值捕获：按钮回调是延后执行的
+    }).build();
+    y += kSetCtrlH + 4.0f;
+    ui.text(id + ".sub").position(pad, y).size(innerW, 18.0f)
+        .text(detail).fontSize(12.0f).lineHeight(16.0f).color(setTextDim())
+        .verticalAlign(core::VerticalAlign::Center).build();
+    y += 18.0f + 10.0f;
+}
+
+// 外链专用：第二行放 URL，按钮是「打开」。
+static void setAboutLinkRow(core::dsl::Ui& ui, const std::string& id, const std::string& label,
+                            const std::string& url, float pad, float innerW, float& y) {
+    setAboutRow(ui, id, label, url, "打开", [url] { wbOpenUrl(url); }, pad, innerW, y);
+}
+
 // 页签：纯文字 + 选中项一条 2px 主色下划线。
 // 不用 pill —— 左侧导航已经是"选中=蓝底圆角"，页面里再来一层蓝 pill 就重了，
 // 而且 pill 的形状跟按钮一样，会让人以为"点一下会执行什么"。返回占用宽度便于连续排布。
@@ -5963,73 +5994,21 @@ static void composeSettingsBody(core::dsl::Ui& ui, float width) {
             .color(components::theme::withOpacity(th.border, 0.8f)).build();
         y += 22.0f;
 
-        // QQ 交流群 + 复制按钮（中性 ghost 按钮，不走主题色 / 不依赖暗色）
-        ui.text("set.about.qq").position(pad, y).size(330.0f, kSetCtrlH)
-            .text("PixelComposer QQ 交流群: 965593104").fontSize(14.0f).lineHeight(20.0f)
-            .color(setTextMain()).verticalAlign(core::VerticalAlign::Center).build();
-        ui.stack("set.about.qq.copy.wrap").position(pad + 340.0f, y).size(72.0f, kSetCtrlH).content([&] {
-            components::button(ui, "set.about.qq.copy").theme(th, false).size(72.0f, kSetCtrlH)
-                .text("复制").fontSize(13.0f)
-                .onClick([] {
-                    wbCopyToClipboard("965593104");
-                    showToast("已复制 QQ 群号", "965593104 已复制到剪贴板", false);
-                }).build();
-        }).build();
-        y += kSetCtrlH + 12.0f;
-
-        // 启动器版本 + 项目仓库（kLauncherVersion / kLauncherRepoUrl 在文件顶部集中维护）。
-        // 版本号与地址**分两行**，不是排版偏好 —— 合成一行实测 847 px，而这一列的文字区
-        // 只有 innerW - 90 = 686 px（右边留给「打开」按钮）。ui.text 不裁剪，超出部分会
-        // 直接压到按钮底下。分开后：版本行 161 px、地址行 675 px，都放得下。
-        ui.text("set.about.ver").position(pad, y).size(innerW - 90.0f, kSetCtrlH)
-            .text(std::string("启动器版本 ") + kLauncherVersion).fontSize(14.0f).lineHeight(20.0f)
-            .color(setTextMain()).verticalAlign(core::VerticalAlign::Center).build();
-        ui.stack("set.about.ver.open.wrap").position(pad + innerW - 78.0f, y).size(72.0f, kSetCtrlH).content([&] {
-            components::button(ui, "set.about.ver.open").theme(th, false).size(72.0f, kSetCtrlH)
-                .text("打开").fontSize(13.0f)
-                .onClick([] { wbOpenUrl(kLauncherRepoUrl); }).build();
-        }).build();
-        y += kSetCtrlH + 4.0f;
-
-        ui.text("set.about.ver.url").position(pad, y).size(innerW, 18.0f)
-            .text(kLauncherRepoUrl).fontSize(12.0f).lineHeight(16.0f)
-            .color(setTextDim()).verticalAlign(core::VerticalAlign::Center).build();
-        y += 18.0f + 10.0f;
-
-        // 项目链接（ghost 按钮，跳默认浏览器）
-        ui.text("set.about.pxc").position(pad, y).size(innerW - 90.0f, kSetCtrlH)
-            .text("特效编辑器 Pixel-Composer 项目链接 https://github.com/Ttanasart-pt/Pixel-Composer")
-            .fontSize(14.0f).lineHeight(20.0f).color(setTextMain())
-            .verticalAlign(core::VerticalAlign::Center).build();
-        ui.stack("set.about.pxc.open.wrap").position(pad + innerW - 78.0f, y).size(72.0f, kSetCtrlH).content([&] {
-            components::button(ui, "set.about.pxc.open").theme(th, false).size(72.0f, kSetCtrlH)
-                .text("打开").fontSize(13.0f)
-                .onClick([] { wbOpenUrl("https://github.com/Ttanasart-pt/Pixel-Composer"); }).build();
-        }).build();
-        y += kSetCtrlH + 10.0f;
-
-        ui.text("set.about.eui").position(pad, y).size(innerW - 90.0f, kSetCtrlH)
-            .text("UI 框架 EUI-NEO 项目链接 https://github.com/sudoevolve/EUI-NEO")
-            .fontSize(14.0f).lineHeight(20.0f).color(setTextMain())
-            .verticalAlign(core::VerticalAlign::Center).build();
-        ui.stack("set.about.eui.open.wrap").position(pad + innerW - 78.0f, y).size(72.0f, kSetCtrlH).content([&] {
-            components::button(ui, "set.about.eui.open").theme(th, false).size(72.0f, kSetCtrlH)
-                .text("打开").fontSize(13.0f)
-                .onClick([] { wbOpenUrl("https://github.com/sudoevolve/EUI-NEO"); }).build();
-        }).build();
-        y += kSetCtrlH + 10.0f;
-
-        // 作者与 B 站主页
-        ui.text("set.about.author").position(pad, y).size(innerW - 90.0f, kSetCtrlH)
-            .text("作者：凌晨猫  B 站主页： https://space.bilibili.com/9170538")
-            .fontSize(14.0f).lineHeight(20.0f).color(setTextMain())
-            .verticalAlign(core::VerticalAlign::Center).build();
-        ui.stack("set.about.author.open.wrap").position(pad + innerW - 78.0f, y).size(72.0f, kSetCtrlH).content([&] {
-            components::button(ui, "set.about.author.open").theme(th, false).size(72.0f, kSetCtrlH)
-                .text("打开").fontSize(13.0f)
-                .onClick([] { wbOpenUrl("https://space.bilibili.com/9170538"); }).build();
-        }).build();
-        y += kSetCtrlH + 10.0f;
+        // 关于信息里的行，统一走 setAboutRow（说明 + 右侧按钮 / 具体值另起一行）。
+        // 顺序：QQ 交流群 → 启动器版本 → PXC 原项目 → UI 框架 → 作者主页。
+        setAboutRow(ui, "set.about.qq", "PixelComposer QQ 交流群", "965593104", "复制",
+                    [] {
+                        wbCopyToClipboard("965593104");
+                        showToast("已复制 QQ 群号", "965593104 已复制到剪贴板", false);
+                    }, pad, innerW, y);
+        setAboutLinkRow(ui, "set.about.ver", std::string("启动器版本 ") + kLauncherVersion,
+                        kLauncherRepoUrl, pad, innerW, y);
+        setAboutLinkRow(ui, "set.about.pxc", "特效编辑器 Pixel-Composer 项目链接",
+                        "https://github.com/Ttanasart-pt/Pixel-Composer", pad, innerW, y);
+        setAboutLinkRow(ui, "set.about.eui", "UI 框架 EUI-NEO 项目链接",
+                        "https://github.com/sudoevolve/EUI-NEO", pad, innerW, y);
+        setAboutLinkRow(ui, "set.about.author", "作者：凌晨猫  B 站主页",
+                        "https://space.bilibili.com/9170538", pad, innerW, y);
 
         // 汉化作者（随包维护中文语言文件的人，与上面的 PXC 原作者不是同一个人，所以单独一行）
         ui.text("set.about.loc.author").position(pad, y).size(innerW, kSetCtrlH)
