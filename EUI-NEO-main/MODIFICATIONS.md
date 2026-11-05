@@ -19,7 +19,23 @@
 | 实际快照 | 晚于 `v0.6.0` tag（README、`site/`、`CONTRIBUTING.md` 等已含 tag 之后的上游更新） |
 | 同步策略 | **不跟进上游更新**，长期固定在本快照 |
 
-因为不打算跟进上游，本目录可以按需裁剪（例如不含构建所需的 `assets/`），不必保持与上游逐字节一致。
+因为不打算跟进上游，本目录可以按需裁剪，不必保持与上游逐字节一致。
+
+### 已移除的 `assets/`
+
+整份删除（5.7 MB）。其中含 Les Gordon 的商业音乐与 Shadertoy 着色器（多为 CC BY-NC-SA），
+公开仓库分发有版权风险，而启动器一个都不使用。
+
+**注意连带影响**：框架的默认字体常量指向该目录 ——
+`kDefaultUiFontFile = "JingNanJunJunTi-JinNanJunJunTi-Bold-2.ttf"`（界面字体）与
+`kDefaultIconFontFile = "Font Awesome 7 Free-Solid-900.otf"`（`ui.text().icon()` 的图标字体），
+见 `core/render/text.cpp:43`。目录删掉后 `resolveDefaultUiFontPath()` 会静默退回系统字体：
+不报错、不进日志，只是汉字换了字形、图标全变缺字方框。
+
+因此**宿主应用必须显式指定字体**：PXC 启动器把这两个字体收到自己的 `launcher/data/fonts/`，
+在 `dslAppConfig()` 里用 `cfg.textFont(绝对路径)` / `cfg.iconFont(绝对路径)` 覆盖
+（绝对路径是必须的 —— `resolveFontFilePath()` 只会去 `<exe>/assets` 下按文件名找）。
+其他接收这份副本的应用若用 `ui.text().icon()`，同样要做这一步。
 
 ## 修改清单（13 个文件）
 

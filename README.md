@@ -81,5 +81,7 @@ EUI-NEO-main/           vendored UI 框架（含其 LICENSE）
 - [EUI-NEO](EUI-NEO-main) —— vendored UI 框架，Apache License 2.0；本地改动逐项记录在
   [EUI-NEO-main/MODIFICATIONS.md](EUI-NEO-main/MODIFICATIONS.md)
 - Noto Sans SC、Fira Code、JetBrains Mono —— SIL Open Font License 1.1
+- 荆南俊俊体（界面主字体，© 荆南字坊）、Font Awesome 7 Free（图标字体，© Fonticons）
+  —— SIL Open Font License 1.1，清单见 `launcher/data/fonts/LICENSES.md`
 - zlib 1.3.1 —— 见 `EUI-NEO-main/3rd/zlib-1.3.1`
 - Steam / itch.io 图标为各平台商标，仅用于标识渠道

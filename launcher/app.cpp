@@ -7796,6 +7796,29 @@ DslAppConfig& mutableDslAppConfig() {
         initOnce();
         DslAppConfig cfg;
         cfg.title("PXC 启动器").fps(60.0).clearColor({0.13f, 0.15f, 0.17f, 1.0f});
+        // 界面字体与图标字体：**必须显式指定**，不能吃 EUI 的默认值。
+        // EUI 的默认是 `assets/JingNanJunJunTi-...ttf` 与 `assets/Font Awesome 7 Free-Solid-900.otf`，
+        // 那是它 demo 用的资源；vendored 目录里的 assets/ 已整份移除（含商业音乐与着色器，
+        // 见 EUI-NEO-main/MODIFICATIONS.md），默认值因此指向不存在的文件。
+        // 后果是静默的：字体栈找不到主字体就退回系统字体，汉字换字形、`ui.text().icon()`
+        // 的图标全变成缺字方框，**不报错也不进日志**（2026-11-05 踩过）。
+        // 所以字体归属改到启动器自己的 data/fonts，路径给绝对路径 —— resolveFontFilePath
+        // 只会在 <exe>/assets 下按文件名找，给相对名照样落空。
+        {
+            std::error_code fec;
+            const std::filesystem::path uiFont = fontsRoot() / "JingNanJunJunTi-JinNanJunJunTi-Bold-2.ttf";
+            const std::filesystem::path iconFont = fontsRoot() / "Font Awesome 7 Free-Solid-900.otf";
+            const bool hasUi = std::filesystem::exists(uiFont, fec);
+            const bool hasIcon = std::filesystem::exists(iconFont, fec);
+            if (hasUi) cfg.textFont(pxc_util::toUtf8(uiFont.wstring().c_str()));
+            if (hasIcon) cfg.iconFont(pxc_util::toUtf8(iconFont.wstring().c_str()));
+            // 落一行日志：这条链失效时界面只是「悄悄换了字体」，看不出错也搜不到原因，
+            // 唯一能在事发现场留下的证据就是这行。
+            pxc_log::write("INFO", "Font",
+                           std::string("界面字体=") + (hasUi ? "自定义" : "缺失→系统字体") +
+                               " | 图标字体=" + (hasIcon ? "FontAwesome" : "缺失→系统字体") + " | 目录=" +
+                               pxc_util::toUtf8(fontsRoot().wstring().c_str()));
+        }
         // 文本缩放：**必须在这里进内核**。initialize() 只读一次 config.textScaleValue，
         // 早于第一次 compose —— 这正是"重启后字号回到 100%"那个 bug 的修法：以前只有
         // applyTextScale() 改内核，启动路径上没人读配置，于是每帧都按 1.0 渲染，

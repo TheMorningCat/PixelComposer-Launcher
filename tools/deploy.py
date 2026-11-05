@@ -128,6 +128,13 @@ def main():
                 name = (d_part.replace("/", "--") + "--" if d_part else "") + stem + ".txt"
             shutil.copy2(os.path.join(d, f), os.path.join(lic_dir, name))
             n_lic += 1
+    # 内置字体走 SIL OFL 1.1：§2 同样要求随副本带上版权声明与许可全文。
+    # 字体目录里的这两份文件就是为此准备的（清单 + 全文），一并拷进 licenses/。
+    for fn, out in (("LICENSES.md", "fonts-LICENSES.md"), ("OFL-1.1.txt", "fonts-OFL-1.1.txt")):
+        src = os.path.join(fonts, fn)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(lic_dir, out))
+            n_lic += 1
     print(f"许可副本 -> {lic_dir} ({n_lic} 个)")
     return 0
 
