@@ -74,8 +74,7 @@ EUI-NEO-main/           vendored UI 框架（含其 LICENSE）
 源代码采用 [MIT](LICENSE) 许可。
 
 **图标不在授权范围内。** `素材/` 下的 logo 源文件、`launcher/res/launcher.ico`，以及由
-`tools/mkicon.py` 生成的一切图标，保留所有权利。如果你要发布修改版，请换一个图标——
-这样用户才不会把别人的版本当成这里发布的版本。
+`tools/mkicon.py` 生成的一切图标，保留所有权利。
 
 ## 第三方
 
