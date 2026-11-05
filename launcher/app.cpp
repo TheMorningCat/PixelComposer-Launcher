@@ -5841,7 +5841,10 @@ static void setSwitchRow(core::dsl::Ui& ui, const std::string& id, const std::st
     setHint(ui, id + ".hint", hint, x + swW + 16.0f, y + 9.0f, hintW);
 }
 
-static constexpr const char* kLauncherVersion = "v0.0.2";   // 启动器版本号（关于信息展示，换版本只改这里）
+static constexpr const char* kLauncherVersion = "v0.0.3";   // 启动器版本号（关于信息展示，换版本只改这里）
+// 项目仓库（设置页「关于信息」里的跳转目标）。放在版本号旁边：发版时两处一起看，
+// 免得版本号改了、链接还停在旧仓库。
+static constexpr const char* kLauncherRepoUrl = "https://github.com/TheMorningCat/PixelComposer-Launcher/tree/main";
 
 // 设置页头部高度：标题 28→80、页签 80→118、分隔线、间距 →144。
 //
@@ -5974,11 +5977,24 @@ static void composeSettingsBody(core::dsl::Ui& ui, float width) {
         }).build();
         y += kSetCtrlH + 12.0f;
 
-        // 启动器版本（kLauncherVersion 在文件顶部集中维护）
-        ui.text("set.about.ver").position(pad, y).size(innerW, kSetCtrlH)
+        // 启动器版本 + 项目仓库（kLauncherVersion / kLauncherRepoUrl 在文件顶部集中维护）。
+        // 版本号与地址**分两行**，不是排版偏好 —— 合成一行实测 847 px，而这一列的文字区
+        // 只有 innerW - 90 = 686 px（右边留给「打开」按钮）。ui.text 不裁剪，超出部分会
+        // 直接压到按钮底下。分开后：版本行 161 px、地址行 675 px，都放得下。
+        ui.text("set.about.ver").position(pad, y).size(innerW - 90.0f, kSetCtrlH)
             .text(std::string("启动器版本 ") + kLauncherVersion).fontSize(14.0f).lineHeight(20.0f)
             .color(setTextMain()).verticalAlign(core::VerticalAlign::Center).build();
-        y += kSetCtrlH + 10.0f;
+        ui.stack("set.about.ver.open.wrap").position(pad + innerW - 78.0f, y).size(72.0f, kSetCtrlH).content([&] {
+            components::button(ui, "set.about.ver.open").theme(th, false).size(72.0f, kSetCtrlH)
+                .text("打开").fontSize(13.0f)
+                .onClick([] { wbOpenUrl(kLauncherRepoUrl); }).build();
+        }).build();
+        y += kSetCtrlH + 4.0f;
+
+        ui.text("set.about.ver.url").position(pad, y).size(innerW, 18.0f)
+            .text(kLauncherRepoUrl).fontSize(12.0f).lineHeight(16.0f)
+            .color(setTextDim()).verticalAlign(core::VerticalAlign::Center).build();
+        y += 18.0f + 10.0f;
 
         // 项目链接（ghost 按钮，跳默认浏览器）
         ui.text("set.about.pxc").position(pad, y).size(innerW - 90.0f, kSetCtrlH)
