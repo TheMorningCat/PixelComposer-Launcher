@@ -11,6 +11,7 @@
 // 汉化页收目录）。文件/文件夹选择统一走 IFileDialog（可输入地址 + 左侧快速访问）。
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -987,22 +988,381 @@ static std::string dbLabel() {
            std::to_string((int)g_db.entries.size()) + " 条";
 }
 
+// ---- 字体扫描 ----
+// 列表顺序 = 分组顺序：内置 → 中文 → 日文 → 韩文 → 其他，组内按文件名。
+//
+// 「是不是中文字体」既不靠文件名、也不靠 GDI 家族名：
+//   · 文件名看不出来（simhei / STKAITI / LXGW… 都是），用户自己装的中文字体还常常是英文名；
+//   · GDI 在中文系统上返回**本地化**家族名（黑体 / 宋体），跟注册表里的英文名（SimHei）
+//     对不上 —— 实测 885 个家族只对上 498 个，这条路走不通。
+// 现在直接读字体自己的 OS/2 表：`ulCodePageRange1` 就是"本字体支持哪些编码页"的权威声明
+// （bit17=932 日文 / bit18=936 简体 / bit19=949 韩文 / bit20=950 繁体 / bit21=1361 Johab），
+// 与系统语言无关、与装在哪个目录无关，TTC 也能读（取第 0 号字面）。
+// 代价只有每文件两次 read：本机 776 个字体几毫秒。
+static unsigned beU16(const unsigned char* b) { return (unsigned)b[0] << 8 | b[1]; }
+static unsigned beU32(const unsigned char* b) {
+    return (unsigned)b[0] << 24 | (unsigned)b[1] << 16 | (unsigned)b[2] << 8 | b[3];
+}
+
+// ---- 字体元数据：OS/2 的编码页范围 + name 表的本地化名字 ----
+// 两个表一起读：文件已经打开了、表目录也已经拿到，多 seek 两次而已。
+//
+// 为什么还要读 name 表：列表原来显示的是文件名（`simhei.ttf` / `SourceHanSerifSC-Bold.otf`），
+// 用户在系统里看到、在 PXC 里看到的都是「黑体」「思源宋体 Bold」——文件名叫人对不上号。
+struct FontMeta {
+    bool hasCp = false;
+    unsigned cp = 0;
+    std::string zh;    // 中文名，如「微软雅黑」「思源宋体 Bold」
+    std::string ja;    // 日文名，如「ＭＳ ゴシック」
+    std::string full;  // nameID 4 的英文全名（含字重，能区分同族多字重）
+};
+
+// 读字体头 + 表目录项数；`base` 回填第 0 号字面的偏移（TTC 才有，普通字体为 0）。
+static unsigned readTableDir(std::ifstream& f, std::streamoff& base) {
+    base = 0;
+    unsigned char h[12] = {0};
+    f.read(reinterpret_cast<char*>(h), 12);
+    if (f.gcount() != 12) return 0;
+    if (h[0] == 't' && h[1] == 't' && h[2] == 'c' && h[3] == 'f') {
+        // 字体集：头 12 字节之后是各字面的偏移表，取第 0 个
+        const unsigned n = beU32(h + 8);
+        if (n == 0 || n > 256) return 0;
+        unsigned char off[4] = {0};
+        f.read(reinterpret_cast<char*>(off), 4);
+        if (f.gcount() != 4) return 0;
+        base = (std::streamoff)beU32(off);
+    }
+    f.seekg(base);
+    unsigned char dir[12] = {0};
+    f.read(reinterpret_cast<char*>(dir), 12);
+    if (f.gcount() != 12) return 0;
+    const unsigned numTables = beU16(dir + 4);
+    if (numTables == 0 || numTables > 512) return 0;
+    return numTables;
+}
+
+// 在表目录里找一个 tag 的 (offset,length)。**只接受目录之后的位置**，
+// 结束后文件指针停在别处 —— 调用方自己 seek。
+static bool findTable(std::ifstream& f, std::streamoff base, unsigned numTables,
+                      const char* tag, unsigned& off, unsigned& len) {
+    f.seekg(base + 12);
+    for (unsigned i = 0; i < numTables; ++i) {
+        unsigned char rec[16] = {0};
+        f.read(reinterpret_cast<char*>(rec), 16);
+        if (f.gcount() != 16) return false;
+        if (!(rec[0] == tag[0] && rec[1] == tag[1] && rec[2] == tag[2] && rec[3] == tag[3])) continue;
+        off = beU32(rec + 8);
+        len = beU32(rec + 12);
+        return true;
+    }
+    return false;
+}
+
+// UTF-16BE → UTF-8。name 表里 platformID=3 的记录一律是 BE，与系统字节序无关。
+static std::string utf16beToUtf8(const unsigned char* p, size_t n) {
+    std::string out;
+    out.reserve(n);
+    for (size_t i = 0; i + 1 < n; i += 2) {
+        unsigned u = ((unsigned)p[i] << 8) | p[i + 1];
+        if (u >= 0xD800 && u <= 0xDBFF && i + 3 < n) {
+            const unsigned lo = ((unsigned)p[i + 2] << 8) | p[i + 3];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                u = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
+                i += 2;
+            }
+        }
+        if (u < 0x80) {
+            out += (char)u;
+        } else if (u < 0x800) {
+            out += (char)(0xC0 | (u >> 6));
+            out += (char)(0x80 | (u & 0x3F));
+        } else if (u < 0x10000) {
+            out += (char)(0xE0 | (u >> 12));
+            out += (char)(0x80 | ((u >> 6) & 0x3F));
+            out += (char)(0x80 | (u & 0x3F));
+        } else {
+            out += (char)(0xF0 | (u >> 18));
+            out += (char)(0x80 | ((u >> 12) & 0x3F));
+            out += (char)(0x80 | ((u >> 6) & 0x3F));
+            out += (char)(0x80 | (u & 0x3F));
+        }
+    }
+    return out;
+}
+
+static std::string trimSpaces(std::string s) {
+    size_t a = 0, b = s.size();
+    while (a < b && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n' || s[a] == '\0')) ++a;
+    while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r' || s[b - 1] == '\n' ||
+                     s[b - 1] == '\0'))
+        --b;
+    return s.substr(a, b - a);
+}
+
+// nameID 4 是「家族 + 字重」（等线 Bold），比 nameID 1 的「等线」区分度高；
+// 但有些字体的 nameID 4 只填了英文（ChillBitmap_16px 的 4 是英文、1 才是「寒蝉点阵体 16px」），
+// 所以只在 4 以 1 为前缀（即确实同族同语言）时才采信 4。
+static std::string betterName(const std::string& fam, const std::string& full) {
+    if (full.empty()) return fam;
+    if (fam.empty()) return full;
+    return full.compare(0, fam.size(), fam) == 0 ? full : fam;
+}
+
+// 名字可信度：有字体把 GBK 字节直接写进「简体中文」的 name 记录（本机 EDUSTD-15.TTF 就是），
+// 按 UTF-16BE 解出来是「±Ð¨|³¡Áõ®Ñ」——拿它渲染就是一串问号。
+// 但纯 ASCII 的名字是正常的（ChillBitmap_16px 的 nameID 4 就填了英文），不能一并丢掉。
+// 判据：非 ASCII 字符必须落在 CJK / 假名 / 韩文 / 全角里；沾了别的字符（乱码、西欧变音符）
+// 一律当不可信，回退文件名 —— 名字宁可朴素，也不能是乱码。
+static bool nameTrusted(const std::string& s) {
+    if (s.empty()) return false;
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char c = (unsigned char)s[i];
+        unsigned cp = c;
+        size_t n = 1;
+        if (c < 0x80) {
+            if (c < 0x20 || c == 0x7F) return false;
+        } else if ((c & 0xE0) == 0xC0) {
+            cp = c & 0x1Fu; n = 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            cp = c & 0x0Fu; n = 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            cp = c & 0x07u; n = 4;
+        } else {
+            return false;   // 0x80~0xBF 打头 = 非法 UTF-8（Mac Roman 记录常见）
+        }
+        if (i + n > s.size()) return false;
+        for (size_t k = 1; k < n; ++k) {
+            const unsigned char cc = (unsigned char)s[i + k];
+            if ((cc & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (unsigned)(cc & 0x3F);
+        }
+        if (n > 1) {
+            const bool ok = cp == 0x00A9 || cp == 0x00AB || cp == 0x00AE ||   // © « ®
+                            cp == 0x00B0 || cp == 0x00B7 || cp == 0x00BB ||   // ° · »
+                            cp == 0x2122 ||                                   // ™
+                            (cp >= 0x2010 && cp <= 0x2027) ||                 // 破折号 / 引号 / 省略号
+                            (cp >= 0x2030 && cp <= 0x2033) ||                 // ‰ ′ ″
+                            (cp >= 0x3000 && cp <= 0x303F) ||                 // CJK 标点
+                            (cp >= 0x3040 && cp <= 0x30FF) ||                 // 平假名 / 片假名
+                            (cp >= 0x3400 && cp <= 0x4DBF) ||                 // 扩展 A
+                            (cp >= 0x4E00 && cp <= 0x9FFF) ||                 // 基本汉字
+                            (cp >= 0xAC00 && cp <= 0xD7AF) ||                 // 韩文音节
+                            (cp >= 0xF900 && cp <= 0xFAFF) ||                 // 兼容汉字
+                            (cp >= 0xFF00 && cp <= 0xFFEF);                   // 全角
+            if (!ok) return false;
+        }
+        i += n;
+    }
+    return true;
+}
+
+static void readNameTable(std::ifstream& f, unsigned off, unsigned len, FontMeta& m) {
+    if (len < 6) return;
+    f.seekg((std::streamoff)off);
+    unsigned char h[6] = {0};
+    f.read(reinterpret_cast<char*>(h), 6);
+    if (f.gcount() != 6) return;
+    const unsigned count = beU16(h + 2), strOff = beU16(h + 4);
+    if (count == 0 || count > 1024) return;
+    std::vector<unsigned char> recs((size_t)count * 12);
+    f.read(reinterpret_cast<char*>(recs.data()), (std::streamsize)recs.size());
+    if (f.gcount() != (std::streamsize)recs.size()) return;
+
+    // 语言槽：0 中文 / 1 日文 / 2 英文。
+    // 只认 platformID=3（Windows，UTF-16BE）与 platformID=1（Mac Roman，纯 ASCII）——
+    // 其它平台的编码五花八门，硬解出来是乱码。
+    auto slotOf = [](unsigned pid, unsigned eid, unsigned lid) -> int {
+        if (pid == 3 && (eid == 1 || eid == 10)) {
+            if (lid == 0x0804 || lid == 0x0404 || lid == 0x0C04 || lid == 0x1004 || lid == 0x1404)
+                return 0;  // 简 / 繁 / 港 / 新 / 澳
+            if (lid == 0x0411) return 1;
+            if (lid == 0x0409) return 2;
+            return -1;
+        }
+        if (pid == 1 && eid == 0) return 2;
+        return -1;
+    };
+
+    // [nameID 1/4][语言槽]，同类只留先到的一条（重复记录属畸形字体）
+    std::string got[2][3];
+    for (unsigned i = 0; i < count; ++i) {
+        const unsigned char* r = recs.data() + (size_t)i * 12;
+        const unsigned pid = beU16(r), eid = beU16(r + 2), lid = beU16(r + 4);
+        const unsigned nid = beU16(r + 6), ln = beU16(r + 8), no = beU16(r + 10);
+        const int nidx = (nid == 1) ? 0 : (nid == 4 ? 1 : -1);
+        if (nidx < 0) continue;
+        const int slot = slotOf(pid, eid, lid);
+        if (slot < 0 || !got[nidx][slot].empty()) continue;
+        if (ln == 0 || ln > 512) continue;
+        f.seekg((std::streamoff)off + (std::streamoff)strOff + (std::streamoff)no);
+        std::vector<unsigned char> buf(ln);
+        f.read(reinterpret_cast<char*>(buf.data()), (std::streamsize)ln);
+        if (f.gcount() != (std::streamsize)ln) continue;
+        std::string val = pid == 3 ? trimSpaces(utf16beToUtf8(buf.data(), ln))
+                                   : trimSpaces(std::string((const char*)buf.data(), ln));
+        if (!nameTrusted(val)) continue;
+        got[nidx][slot] = val;
+    }
+    m.zh = betterName(got[0][0], got[1][0]);
+    m.ja = betterName(got[0][1], got[1][1]);
+    m.full = !got[1][2].empty() ? got[1][2] : got[0][2];
+}
+
+// 一次 open 取全部元数据。取不到（损坏 / 非 sfnt）返回 false，调用方照样把文件列出来。
+static bool readFontMeta(const std::filesystem::path& file, FontMeta& m) {
+    m = FontMeta{};
+    std::ifstream f(file, std::ios::binary);
+    if (!f) return false;
+    std::streamoff base = 0;
+    const unsigned numTables = readTableDir(f, base);
+    if (!numTables) return false;
+
+    unsigned off = 0, len = 0;
+    if (findTable(f, base, numTables, "OS/2", off, len) && len >= 86) {
+        f.seekg((std::streamoff)off);
+        unsigned char t[86] = {0};
+        f.read(reinterpret_cast<char*>(t), 86);
+        if (f.gcount() == 86 && beU16(t) >= 1) {  // v0 表没有 codePageRange 这两个字段
+            m.cp = beU32(t + 78);
+            m.hasCp = true;
+        }
+    }
+    if (findTable(f, base, numTables, "name", off, len)) readNameTable(f, off, len, m);
+    return true;
+}
+
+// 分组：内置(0) → 中文(1) → 日文(2) → 韩文(3) → 其他(4)。
+// 中文排在最前是因为本启动器的用途就是生成中文语言包，日文其次（界面字体里第二常见）。
+//
+// **先看名字，再看编码页**（2026-11-05 第二轮修正）。
+// 只看编码页会把日文字体塞进中文组：Gen Jyuu Gothic（源柔ゴシック）、瀬戸フォント 这类
+// 声明的是「932 日 + 950 繁」，bit20 一命中就归中文 —— 中文组 211 项里 85 项其实是日文字体，
+// 排在真正的中文字体前面，用户看到的就是"上方全是日文"。
+// 编码页是"能显示哪些字符"，名字是"给谁用的"，后者才是分组依据。
+// 没有本地化名的字体（Noto Sans SC、Fandol 只声明 932+936、没写日文名）照旧退回编码页，
+// 仍能正确落进中文组。
+enum { kFtBuiltin = 0, kFtZh = 1, kFtJa = 2, kFtKo = 3, kFtOther = 4 };
+static int fontTierOf(unsigned cp, bool hasZhName, bool hasJaName) {
+    if (hasZhName) return kFtZh;
+    if (hasJaName) return kFtJa;
+    if (cp & ((1u << 18) | (1u << 20))) return kFtZh;   // 936 GB2312 / 950 Big5
+    if (cp & (1u << 17)) return kFtJa;                  // 932 ShiftJIS
+    if (cp & ((1u << 19) | (1u << 21))) return kFtKo;   // 949 Wansung / 1361 Johab
+    return kFtOther;
+}
+
+// 显示名的来源前缀：三个都是 9 字节（`[` + 一个汉字 6 字节 + `]` + 空格）。
+static std::string fontTagOf(const std::string& disp) {
+    if (disp.rfind("[内置] ", 0) == 0) return "内置";
+    if (disp.rfind("[系统] ", 0) == 0) return "系统";
+    if (disp.rfind("[用户] ", 0) == 0) return "用户";
+    return std::string();
+}
+static std::string fontNameOf(const std::string& disp) {
+    return fontTagOf(disp).empty() ? disp : disp.substr(9);
+}
+
 static void scanFonts() {
     if (!g_fonts.empty()) return;
     std::error_code ec;
-    auto addDir = [&](const std::filesystem::path& d, const std::string& tag) {
+    struct Cand { int tier; int rank; std::string name; std::string disp; std::filesystem::path path; };
+    std::vector<Cand> cands;
+    std::set<std::string> seenPath;   // 目录可能重叠，同一条按路径去重（小写）
+    int nTtc = 0, nSym = 0, nZhName = 0;
+
+    // rank：同一组里**用户自己装的在前**，系统自带的在其后，组内再按文件名。
+    // 用户装字体是为了用它，把 250 多个系统字体压在它前面等于白装。
+    auto addDir = [&](const std::filesystem::path& d, const char* tag, bool builtin) {
         if (d.empty() || !std::filesystem::is_directory(d, ec)) return;
+        const int rank = std::string(tag) == "[系统] " ? 1 : 0;
         for (auto& it : std::filesystem::directory_iterator(d, ec)) {
             if (!it.is_regular_file(ec)) continue;
-            std::wstring ext = it.path().extension().wstring();
+            const std::wstring ext = it.path().extension().wstring();
+            if (ext == L".ttc" || ext == L".TTC") { ++nTtc; continue; }
             if (ext != L".ttf" && ext != L".otf" && ext != L".TTF" && ext != L".OTF") continue;
-            g_fonts.emplace_back(tag + pxc_util::toUtf8(it.path().filename().wstring().c_str()), it.path());
+            const std::string key = pxc_util::toUtf8(it.path().wstring().c_str());
+            std::string low = key;
+            for (auto& c : low) c = (char)std::tolower((unsigned char)c);
+            if (!seenPath.insert(low).second) continue;
+
+            FontMeta meta;
+            readFontMeta(it.path(), meta);
+            const bool hasCp = meta.hasCp;
+            const unsigned cp = meta.cp;
+            const bool hasZhName = !meta.zh.empty();
+            const bool hasJaName = !meta.ja.empty();
+            // 纯符号字体（WINGDNG / AIGDT / MTSY 之类）：用它们渲染自己的名字就是豆腐块，
+            // 当界面字体更是没有任何意义，直接不进列表。这里只看编码页 —— 它们本来也没有名字。
+            if (hasCp && (cp & (1u << 31)) && fontTierOf(cp, false, false) == kFtOther) { ++nSym; continue; }
+            const int tier = builtin ? kFtBuiltin : fontTierOf(cp, hasZhName, hasJaName);
+            // sortKey 用去扩展名的文件名：同族多字重（arial.ttf / arialbd.ttf）天然相邻，
+            // 而按中文名排没有公认顺序（UTF-8 码点序不是拼音序）。
+            const std::string sortKey = pxc_util::toUtf8(it.path().stem().wstring().c_str());
+            // 显示名的回退链：中文名 → 日文名 → 英文全名 → 文件名。
+            // 前三者都是字体自己声明的名字，跟系统字体列表、跟 PXC 里看到的一致；
+            // 文件名（simhei.ttf / SourceHanSerifSC-Bold.otf）只有装字体的人认得。
+            // 名字也决定了分组（`fontTierOf`），所以这里不必再判 tier。
+            std::string dispName;
+            if (hasZhName)
+                dispName = meta.zh;
+            else if (hasJaName)
+                dispName = meta.ja;
+            else if (!meta.full.empty())
+                dispName = meta.full;
+            else
+                dispName = sortKey;
+            if (hasZhName) ++nZhName;
+            cands.push_back({tier, builtin ? 0 : rank, sortKey, std::string(tag) + dispName, it.path()});
         }
     };
-    addDir(fontsRoot(), "[内置] ");
+    addDir(fontsRoot(), "[内置] ", true);
     wchar_t windir[MAX_PATH] = {0};
     GetWindowsDirectoryW(windir, MAX_PATH);
-    if (windir[0]) addDir(std::filesystem::path(std::wstring(windir)) / "Fonts", "[系统] ");
+    if (windir[0]) addDir(std::filesystem::path(std::wstring(windir)) / "Fonts", "[系统] ", false);
+    // 用户级字体：安装时选「仅为我安装」的字体会落在这里，**不在** C:\Windows\Fonts。
+    // 本机 256 个里 183 个是中文 —— 用户报的"中文字体一个都没显示"就是漏了这一条。
+    wchar_t localApp[MAX_PATH] = {0};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localApp, MAX_PATH) > 0)
+        addDir(std::filesystem::path(std::wstring(localApp)) / "Microsoft" / "Windows" / "Fonts",
+               "[用户] ", false);
+
+    std::stable_sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) {
+        if (a.tier != b.tier) return a.tier < b.tier;
+        if (a.rank != b.rank) return a.rank < b.rank;
+        const std::string& x = a.name;
+        const std::string& y = b.name;
+        const size_t n = std::min(x.size(), y.size());
+        for (size_t i = 0; i < n; ++i) {
+            const unsigned char cx = (unsigned char)std::tolower((unsigned char)x[i]);
+            const unsigned char cy = (unsigned char)std::tolower((unsigned char)y[i]);
+            if (cx != cy) return cx < cy;
+        }
+        return x.size() < y.size();
+    });
+
+    // 不同文件可能声明同一个显示名 —— 站酷的仿制字体直接把「Lucida Calligraphy Italic」
+    // 抄进自己的 name 表，本机就和原版撞了三个。撞名的项在列表里没法分辨，
+    // 全部退回「来源标签 + 文件名」，至少是唯一的。
+    // （同名同文件（两个目录各装一份）不算撞，那种靠灰标签的内置/用户区分。）
+    {
+        std::map<std::string, std::set<std::string>> byDisp;
+        for (auto& c : cands) byDisp[c.disp].insert(c.name);
+        for (auto& c : cands)
+            if (byDisp[c.disp].size() > 1) c.disp = c.disp.substr(0, 9) + c.name;
+    }
+
+    int tierCnt[5] = {0, 0, 0, 0, 0};
+    for (auto& c : cands) {
+        ++tierCnt[c.tier < 0 || c.tier > 4 ? 4 : c.tier];
+        g_fonts.emplace_back(c.disp, c.path);
+    }
+    pxc_log::write("INFO", "Font",
+                   "字体表 " + std::to_string((int)g_fonts.size()) + " 个（内置 " +
+                       std::to_string(tierCnt[kFtBuiltin]) + " / 中文 " + std::to_string(tierCnt[kFtZh]) +
+                       " / 日文 " + std::to_string(tierCnt[kFtJa]) + " / 韩文 " +
+                       std::to_string(tierCnt[kFtKo]) + " / 其他 " + std::to_string(tierCnt[kFtOther]) +
+                       "）| 跳过 TTC " + std::to_string(nTtc) + " 个、纯符号 " + std::to_string(nSym) +
+                       " 个 | 其中 " + std::to_string(nZhName) + " 个显示中文名");
 }
 
 static int fontIndex(const std::string& p) {
@@ -4026,6 +4386,9 @@ static void wbLoadLayer(const std::string& dirUtf8) {
         }
         std::vector<pxc_index::Item> kids = pxc_index::scanLayer(pxc_util::pathFromUtf8(dirUtf8));
         for (auto& k : kids) wbApplyCached(k);
+        // 进文件夹后同样"最新在前"：文件系统给的是索引序（FindFirstFile 的顺序，看着像随机），
+        // 由我们定一个，且与懒识别的推进顺序一致 —— 见 wbTickDetect 的顺序说明。
+        pxc_index::sortItems(kids, {pxc_index::SortKey::Mtime, false});
         it = g_wb.layers.emplace(dirUtf8, std::move(kids)).first;
     }
     g_wb.all = it->second;
@@ -4104,6 +4467,12 @@ static void wbLoadTab(int tab, bool force) {
     g_wb.crumbs.clear();
     g_wb.all = wbRootItems(tab);
     for (auto& it : g_wb.all) wbApplyCached(it);
+    // **数组顺序 = 识别顺序**（wbTickDetect 从下标 0 往后扫）。所以这里先按该页签的默认排序列
+    // 就地整理一次：自动恢复 / 工程库 / 收藏 / 全部都是"最近在前"，于是最新那份工程最先被识别，
+    // 用户打开页面第一眼看到的那几行也就最先填出版本。
+    // 「近期」和「启动历史」不排：它们来自数组（PXC 的 recent.json / 我们的 noteLaunch 表头插入），
+    // 原顺序本身就是"最近在前"，再排一次反而把语义排丢（同 defaultSort 的注释）。
+    pxc_index::sortItems(g_wb.all, pxc_index::defaultSort(tab));
     g_wb.layers[""] = g_wb.all;
     g_wb.loaded[tab] = true;
     wbBuildRows();
@@ -4171,6 +4540,9 @@ static void wbUpdateStatus() {
 
 // 懒识别：每帧最多 12ms。按**时间**限流而不是按个数 —— 单个文件 12KB 到 474KB 差 30 倍，
 // 固定"每帧 4 个"在遇到大文件时会突然出现 40ms 的帧，滚轮一卡一卡。
+// **推进顺序 = `g_wb.all` 的数组序**（从下标 0 往后扫），而数组在装载时就按默认排序列整理过
+// （wbLoadTab / wbLoadLayer 里调 sortItems）—— 所以是"最新的先识别"，不是文件系统索引序。
+// 要改识别顺序，改装载处的排序，别在这里加第二套比较逻辑。
 static void wbTickDetect() {
     if (g_wb.all.empty()) return;
     const auto t0 = std::chrono::steady_clock::now();
@@ -6570,9 +6942,9 @@ static void composeLocale(core::dsl::Ui& ui, float width) {
     cy += 20.0f + kLocRowGap;
 
     // ⑨ 字体：两列，选项用字体本身渲染（§8.3 —— 让人在选之前就能看出中文长什么样）
-    // 列不全：Windows 的 Fonts 目录动辄上百个，其中大半是符号字体（`AIGDT`、`MTSY` 之类），
-    // 用它们渲染自己的名字只会得到一串豆腐块。按 §8.3 约束 3 只列前 20 项 + 「更多…」，
-    // 内置字体排在前（`scanFonts()` 就是先扫内置再扫系统）。
+    // 列不全：Windows 的字体动辄几百个。按 §8.3 约束 3 只列前 20 项 + 「更多…」，
+    // 前 20 项由 `scanFonts()` 的顺序决定：内置 → 中文 → 日文 → 韩文 → 其他。
+    // 也就是说默认那一屏里全是能打中文的字体，符号字体已被 `scanFonts()` 直接剔掉。
     {
         const float c2x = cx + cw * 0.45f;
         const float fLabW = 72.0f;
@@ -6595,12 +6967,10 @@ static void composeLocale(core::dsl::Ui& ui, float width) {
             std::vector<std::string> items, tags, paths;
             for (int k = 0; k < shown; ++k) {
                 const std::string& nm = g_fonts[(size_t)k].first;
-                // `scanFonts()` 的显示名是「[内置] 文件名」/「[系统] 文件名」，前缀都是 9 字节。
-                // 前缀挪到右侧当灰标签，主文本只留文件名 —— 它要按 HTML 那个字体渲染，前面挂个
-                // 中文标签反而看不清字形。
-                const bool hasTag = (nm.rfind("[内置] ", 0) == 0 || nm.rfind("[系统] ", 0) == 0);
-                items.push_back(hasTag ? nm.substr(9) : nm);
-                tags.push_back(hasTag ? (nm.rfind("[内置] ", 0) == 0 ? "内置" : "系统") : "");
+                // `scanFonts()` 的显示名是「[内置]/[系统]/[用户] + 文件名」。前缀挪到右侧当灰标签，
+                // 主文本只留文件名 —— 它要按字体本身渲染，前面挂个中文标签反而看不清字形。
+                items.push_back(fontNameOf(nm));
+                tags.push_back(fontTagOf(nm));
                 paths.push_back(g_fonts[(size_t)k].second.u8string());
             }
             if (noFont) {
@@ -6618,7 +6988,7 @@ static void composeLocale(core::dsl::Ui& ui, float width) {
             std::string curName;
             if (!noFont && cur >= 0 && cur < (int)g_fonts.size()) {
                 const std::string& nm = g_fonts[(size_t)cur].first;
-                curName = (nm.rfind("[内置] ", 0) == 0 || nm.rfind("[系统] ", 0) == 0) ? nm.substr(9) : nm;
+                curName = fontNameOf(nm);
             }
             const int sel = (!noFont && cur >= 0 && cur < shown) ? cur : -1;
             const std::string ph = noFont ? std::string("（无可用字体）")

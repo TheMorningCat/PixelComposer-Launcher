@@ -106,15 +106,6 @@ static bool copyFileTo(const fs::path& src, const fs::path& dst) {
     return !ec;
 }
 
-static std::string stamp() {
-    std::time_t t = std::time(nullptr);
-    std::tm tm{};
-    localtime_s(&tm, &t);
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
-    return std::string(buf);
-}
-
 // 默认字体槽位表（骨架没有 fonts.json 时用；取自官方 sample locale 的槽位与字号）
 static const std::vector<std::pair<std::string, int>>& defaultSlots() {
     static const std::vector<std::pair<std::string, int>> v = {
@@ -571,16 +562,20 @@ Stats generate(const pxc_base::Baseline& base, const pxc_tdb::Db& db, const Expr
 
     stage("自检通过，准备替换目标目录");
 
-    // ---------------- 备份旧目录 + 原子替换 ----------------
+    // ---------------- 原子替换（**不留备份**） ----------------
+    // 2026-11-05 移除：以前这里把旧语言目录整份 rename 到 <Locale>/.pxc_backup/<lang>_<时间戳>/。
+    // 一份语言包 12 MB（json + 字体），生成几次就多几份，用户目录越积越大；而汉化是完全由
+    // 对照表 + 骨架推导出来的生成物，重新生成只要 200 ms 左右，备份没有任何使用场景。
+    // 现在改成"旧目录先挪到临时区、换成功再随临时区一起删"：同样原子（同盘 rename 不拷贝），
+    // 且新目录放失败时旧目录能原样挪回去 —— 不备份不等于可以丢用户手上的东西。
     fs::path dest = pxc_util::joinUtf8(outRoot, langDir);
-    if (fs::exists(dest, ec)) {
-        fs::path bakRoot = outRoot / ".pxc_backup";
-        fs::create_directories(bakRoot, ec);
-        fs::path bak = pxc_util::joinUtf8(bakRoot, langDir + "_" + stamp());
+    fs::path parked = pxc_util::joinUtf8(tmpRoot, "__old");
+    const bool hadOld = fs::exists(dest, ec);
+    if (hadOld) {
         std::error_code rc;
-        fs::rename(dest, bak, rc); // 同盘，等价于移动
+        fs::rename(dest, parked, rc); // 同盘，等价于移动
         if (rc) {
-            st.error = "备份旧语言目录失败：" + pxc_util::toUtf8(dest.wstring().c_str());
+            st.error = "移走旧语言目录失败：" + pxc_util::toUtf8(dest.wstring().c_str());
             fs::remove_all(tmpRoot, ec);
             return st;
         }
@@ -589,10 +584,25 @@ Stats generate(const pxc_base::Baseline& base, const pxc_tdb::Db& db, const Expr
     fs::create_directories(outRoot, rc);
     fs::rename(tmp, dest, rc);
     if (rc) {
+        if (hadOld) {   // 换失败：把旧的放回去，宁可这次没生成成功，也不能让现有汉化消失
+            std::error_code r2;
+            fs::rename(parked, dest, r2);
+        }
         st.error = "替换到目标目录失败：" + pxc_util::toUtf8(dest.wstring().c_str());
-        return st;
+        return st;   // tmpRoot 留着给下一次开头的 remove_all 清
     }
-    fs::remove_all(tmpRoot, ec);
+    fs::remove_all(tmpRoot, ec);   // tmp 已挪走，这里清的是 __old 与残留
+
+    // 清掉历史遗留的备份目录（旧版本每一份都是完整的 12 MB 语言包，只增不减）。
+    // 只认这个名字、只在 outRoot 这一层，不碰用户任何其它内容。
+    {
+        const fs::path legacy = outRoot / ".pxc_backup";
+        std::error_code lec;
+        if (fs::is_directory(legacy, lec)) {
+            const std::uintmax_t n = fs::remove_all(legacy, lec);
+            if (!lec) stage("已清理旧备份 .pxc_backup（" + std::to_string((int)n) + " 个条目）");
+        }
+    }
 
     stage("生成完成 -> " + pxc_util::toUtf8(dest.wstring().c_str()));
     st.ok = true;

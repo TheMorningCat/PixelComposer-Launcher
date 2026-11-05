@@ -72,7 +72,8 @@ struct Stats {
     std::vector<std::string> missingKeys;
 };
 
-// 生成：先写到 <outRoot>/.pxc_gen_tmp/<lang>，自检通过后备份旧目录并原子替换。
+// 生成：先写到 <outRoot>/.pxc_gen_tmp/<lang>，自检通过后原子替换旧目录（**不留备份**，
+// 见 .cpp 里替换段的注释：汉化是生成物，留备份只会让用户目录无限膨胀）。
 Stats generate(const pxc_base::Baseline& base, const pxc_tdb::Db& db, const ExprSet& ex,
                const FontPick& font, const Options& opt, const std::filesystem::path& outRoot,
                const std::string& langDir);
